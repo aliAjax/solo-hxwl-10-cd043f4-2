@@ -1,161 +1,176 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import { ROLE_LABEL, type Role } from "./domain";
+import { useWorkbench } from "./ui/useWorkbench";
+import { UnitForm, RelationForm } from "./ui/Forms";
+import { ConflictPanel } from "./ui/Conflicts";
+import { StrataGraph } from "./ui/Graph";
+import { defaultFilters, type Filters, UnitsPanel } from "./ui/UnitsPanel";
+import { SequencePanel } from "./ui/Sequence";
+import { StatsBar } from "./ui/StatsBar";
 
-const project = {
-  "id": "hxwl-10",
-  "port": 5110,
-  "title": "考古探方记录",
-  "subtitle": "遗址探方、地层关系与出土物坐标档案",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#854d0e",
-    "#047857",
-    "#475569"
-  ],
-  "domain": "考古发掘",
-  "users": [
-    "发掘队员",
-    "领队",
-    "资料整理员"
-  ],
-  "metrics": [
-    "探方数",
-    "地层数",
-    "出土物",
-    "未整理记录"
-  ],
-  "filters": [
-    "灰坑",
-    "墓葬",
-    "房址",
-    "沟状遗迹"
-  ],
-  "fields": [
-    "遗址",
-    "探方",
-    "地层",
-    "遗迹单位",
-    "深度",
-    "土色",
-    "坐标点",
-    "出土物"
-  ],
-  "records": [
-    [
-      "T0203",
-      "第3层",
-      "灰褐土",
-      "陶片12件，坐标E3N4"
-    ],
-    [
-      "T0204",
-      "H12灰坑",
-      "黑褐土",
-      "夹炭屑，见动物骨"
-    ],
-    [
-      "T0301",
-      "F2房址",
-      "夯土面",
-      "柱洞关系需复核"
-    ]
-  ]
-};
+export default function App() {
+  const wb = useWorkbench();
+  const { state, store, run, role, setRole } = wb;
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
+  const [filters, setFilters] = useState<Filters>(defaultFilters);
+  const [graphSquare, setGraphSquare] = useState<string>("all");
+  const [highlightCodes, setHighlightCodes] = useState<Set<string>>(new Set());
 
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
-  return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
-    </article>
+  const squares = useMemo(
+    () => [...new Set(state.units.map((u) => u.square))].sort(),
+    [state.units]
   );
-}
+  const effectiveSquare =
+    graphSquare !== "all" && squares.includes(graphSquare)
+      ? graphSquare
+      : squares[0] ?? "all";
 
-function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  // 筛选探方时，关系图跟随到同一探方
+  const onFiltersChange = (f: Filters) => {
+    setFilters(f);
+    if (f.square !== "all") setGraphSquare(f.square);
+  };
+
+  const focusCodes = (codes: string[], square?: string) => {
+    setHighlightCodes(new Set(codes));
+    if (square && squares.includes(square)) setGraphSquare(square);
+    window.setTimeout(() => setHighlightCodes(new Set()), 6000);
+  };
 
   return (
-    <main className="app-shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
+    <main className="app">
+      <header className="topbar">
+        <div className="brand">
+          <h1>探方地层关系工作台</h1>
+          <p>按探方管理遗迹单位、上下层叠压关系、状态流转与版本档案</p>
         </div>
-        <div className="stack-card">
-          <span>技术栈</span>
-          <strong>{project.stack}</strong>
-        </div>
-      </section>
-
-      <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
-        ))}
-      </section>
-
-      <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
+        <div className="role-switch" role="radiogroup" aria-label="当前角色">
+          <span className="role-label">当前角色</span>
+          {(Object.keys(ROLE_LABEL) as Role[]).map((r) => (
+            <button
+              key={r}
+              role="radio"
+              aria-checked={role === r}
+              className={`role-btn ${role === r ? "role-on" : ""} ${r === "leader" ? "role-leader" : ""}`}
+              onClick={() => setRole(r)}
+            >
+              {ROLE_LABEL[r]}
+            </button>
           ))}
+          <button
+            className="reset-btn"
+            title="清空浏览器中的本地数据并重置为示例"
+            onClick={() => {
+              if (window.confirm("确定清空全部本地记录并恢复示例数据？该操作不可撤销。")) {
+                wb.resetAll();
+              }
+            }}
+          >
+            重置数据
+          </button>
         </div>
-      </section>
+      </header>
+
+      {role !== "leader" ? (
+        <div className="role-hint">
+          当前为「{ROLE_LABEL[role]}」视角：可登记与编辑草稿、退回待复核记录；
+          <b>提交复核 / 封存只有领队可执行</b>。
+        </div>
+      ) : (
+        <div className="role-hint role-hint-leader">
+          当前为「领队」视角：可推进全部状态流转；封存后记录与关系一律锁定，退回与回退均自动保留版本。
+        </div>
+      )}
+
+      <StatsBar state={state} />
+
+      <div className="layout-cols">
+        <div className="col-main">
+          <div className="form-row">
+            <UnitForm store={store} run={run} squares={squares} />
+            <RelationForm store={store} run={run} units={state.units} />
+          </div>
+
+          <section className="panel">
+            <header className="panel-head">
+              <h2>③ 地层序列与关系图</h2>
+              <p>关系变化即时重排；点击冲突记录的「在图中定位」可高亮具体单位与连线</p>
+            </header>
+            <div className="square-tabs">
+              <button
+                className={`sq-tab ${effectiveSquare === "all" ? "on" : ""}`}
+                onClick={() => setGraphSquare("all")}
+              >
+                全部分组
+              </button>
+              {squares.map((s) => (
+                <button
+                  key={s}
+                  className={`sq-tab ${effectiveSquare === s ? "on" : ""}`}
+                  onClick={() => setGraphSquare(s)}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            {squares.length === 0 ? (
+              <div className="graph-empty">
+                <p>暂无探方</p>
+                <p className="dim">新增第一个遗迹单位后，这里会出现按探方分组的关系图</p>
+              </div>
+            ) : effectiveSquare === "all" ? (
+              <SequencePanel state={state} activeSquare="all" highlightCodes={highlightCodes} />
+            ) : (
+              <>
+                <StrataGraph
+                  state={state}
+                  store={store}
+                  run={run}
+                  square={effectiveSquare}
+                  highlightCodes={highlightCodes}
+                />
+                <SequencePanel
+                  state={state}
+                  activeSquare={effectiveSquare}
+                  highlightCodes={highlightCodes}
+                />
+              </>
+            )}
+          </section>
+
+          <UnitsPanel
+            state={state}
+            store={store}
+            run={run}
+            role={role}
+            filters={filters}
+            onFiltersChange={onFiltersChange}
+            highlightCodes={highlightCodes}
+          />
+        </div>
+
+        <aside className="col-side">
+          <ConflictPanel state={state} store={store} run={run} focusCodes={focusCodes} />
+        </aside>
+      </div>
+
+      <footer className="app-foot">
+        数据实时保存在本机浏览器（localStorage）：刷新或重开页面后，关系、状态、版本与冲突记录均不丢失。
+      </footer>
+
+      <div className="toast-stack" aria-live="polite">
+        {wb.toasts.map((t) => (
+          <div
+            key={t.id}
+            className={`toast ${t.ok ? "toast-ok" : "toast-err"}`}
+            onClick={() => wb.dismissToast(t.id)}
+          >
+            {t.ok ? "✓ " : "⛔ "}
+            {t.text}
+          </div>
+        ))}
+      </div>
     </main>
   );
 }
-
-export default App;
