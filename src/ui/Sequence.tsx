@@ -50,7 +50,7 @@ export function SequencePanel({
                 <span className="seq-index">{l.blocked ? "⚠" : i + 1}</span>
                 <div className="seq-body">
                   <strong>
-                    {l.unit.code}
+                    {l.unit.code || <em className="no-code">未编号</em>}
                     <em>{KIND_LABEL[l.unit.kind]}</em>
                   </strong>
                   <span>

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildSequences,
   isUnitBlocked,
@@ -9,12 +9,12 @@ import {
   type Store,
 } from "../domain";
 
-const NODE_W = 188;
+const NODE_W = 176;
 const NODE_H = 58;
-const GAP_Y = 40;
-const PAD = 28;
+const GAP_Y = 36;
+const PAD = 24;
 
-/** 按序列顺序自上而下布局；分支节点按入边来源水平摊开 */
+/** 按序列顺序自上而下布局；同层并列时水平排列 */
 function layout(state: AppState, square: string, highlightCodes: Set<string>) {
   const seq = buildSequences(state).find((s) => s.square === square);
   if (!seq) return { nodes: [], edges: [], height: 120, width: 320 };
@@ -24,7 +24,6 @@ function layout(state: AppState, square: string, highlightCodes: Set<string>) {
     (r) => ids.includes(r.upperId) && ids.includes(r.lowerId)
   );
 
-  // level = 序列序号（0 在最上）；同序并列时水平排列
   const orderIndex = new Map(seq.levels.map((l, i) => [l.unit.id, i]));
   const rows = new Map<number, FeatureUnit[]>();
   for (const l of seq.levels) {
@@ -32,14 +31,14 @@ function layout(state: AppState, square: string, highlightCodes: Set<string>) {
     rows.set(k, [...(rows.get(k) ?? []), l.unit]);
   }
   const maxRowSize = Math.max(1, ...[...rows.values()].map((r) => r.length));
-  const width = Math.max(420, maxRowSize * (NODE_W + 48) + PAD * 2);
+  const width = Math.max(300, maxRowSize * (NODE_W + 40) + PAD * 2);
 
   const nodes = seq.levels.map((l) => {
     const rowIdx = orderIndex.get(l.unit.id)!;
     const peers = rows.get(rowIdx)!;
     const col = peers.findIndex((u) => u.id === l.unit.id);
-    const rowWidth = peers.length * (NODE_W + 48) - 48;
-    const x = width / 2 - rowWidth / 2 + col * (NODE_W + 48);
+    const rowWidth = peers.length * (NODE_W + 40) - 40;
+    const x = width / 2 - rowWidth / 2 + col * (NODE_W + 40);
     const y = PAD + rowIdx * (NODE_H + GAP_Y);
     return { unit: l.unit, x, y, blocked: l.blocked };
   });
@@ -65,6 +64,22 @@ function layout(state: AppState, square: string, highlightCodes: Set<string>) {
   return { nodes, edges, height, width, cyclic: seq.cyclic };
 }
 
+/** 测量容器宽度：关系图整体按比例缩放适配，任何屏宽都不出现横向滚动 */
+function useContainerWidth<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+    const update = () => setW(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, width: w };
+}
+
 export function StrataGraph({
   state,
   store,
@@ -78,6 +93,7 @@ export function StrataGraph({
   square: string;
   highlightCodes: Set<string>;
 }) {
+  const { ref, width: containerW } = useContainerWidth<HTMLDivElement>();
   const { nodes, edges, height, width, cyclic } = useMemo(
     () => layout(state, square, highlightCodes),
     [state, square, highlightCodes]
@@ -92,102 +108,83 @@ export function StrataGraph({
     );
   }
 
+  // 容器比图窄时整体缩放（而不是横向滚动）；宽度足够时保持原尺寸
+  const scale = containerW > 0 && width > containerW ? containerW / width : 1;
+  const shownH = height * scale;
+
   return (
-    <div className="graph-scroll">
-      <svg
-        className="strata-svg"
-        width={width}
-        height={height}
-        viewBox={`0 0 ${width} ${height}`}
-      >
-        <defs>
-          <marker
-            id="arrow"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
+    <div className="graph-wrap" ref={ref}>
+      {containerW > 0 && (
+        <div
+          className="graph-scale"
+          style={{ width, height: shownH }}
+        >
+          <svg
+            className="strata-svg"
+            width={width}
+            height={height}
+            viewBox={`0 0 ${width} ${height}`}
+            style={{ transform: `scale(${scale})`, transformOrigin: "0 0" }}
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#854d0e" />
-          </marker>
-          <marker
-            id="arrow-hi"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626" />
-          </marker>
-        </defs>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#854d0e" />
+              </marker>
+              <marker id="arrow-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626" />
+              </marker>
+            </defs>
 
-        {edges.map((e) => {
-          return (
-            <g key={e.id} className={`edge-group${e.hot ? " edge-hot" : ""}`}>
-              <line
-                x1={e.x1}
-                y1={e.y1}
-                x2={e.x2}
-                y2={e.y2 - 4}
-                className="edge-line"
-                markerEnd={e.hot ? "url(#arrow-hi)" : "url(#arrow)"}
-              />
-              {/* 透明粗线 + 删除按钮，方便点中 */}
-              <line
-                x1={e.x1}
-                y1={e.y1}
-                x2={e.x2}
-                y2={e.y2 - 4}
-                className="edge-hit"
-              />
-              <g
-                className="edge-del"
-                transform={`translate(${(e.x1 + e.x2) / 2}, ${(e.y1 + e.y2) / 2})`}
-                onClick={() => run(() => store.removeRelation(e.id))}
-              >
-                <title>删除该关系</title>
-                <circle r="10" />
-                <text textAnchor="middle" dy="3.5">
-                  ×
-                </text>
+            {edges.map((e) => (
+              <g key={e.id} className={`edge-group${e.hot ? " edge-hot" : ""}`}>
+                <line
+                  x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2 - 4}
+                  className="edge-line"
+                  markerEnd={e.hot ? "url(#arrow-hi)" : "url(#arrow)"}
+                />
+                <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2 - 4} className="edge-hit" />
+                <g
+                  className="edge-del"
+                  transform={`translate(${(e.x1 + e.x2) / 2}, ${(e.y1 + e.y2) / 2})`}
+                  onClick={() => run(() => store.removeRelation(e.id))}
+                >
+                  <title>删除该关系</title>
+                  <circle r="11" />
+                  <text textAnchor="middle" dy="4">×</text>
+                </g>
               </g>
-            </g>
-          );
-        })}
+            ))}
 
-        {nodes.map((n) => {
-          const u = n.unit;
-          const blocked = isUnitBlocked(u);
-          const hi = highlightCodes.has(u.code);
-          return (
-            <g
-              key={u.id}
-              transform={`translate(${n.x}, ${n.y})`}
-              className={`node-group node-${u.status} ${hi ? "node-hi" : ""} ${blocked ? "node-blocked" : ""}`}
-            >
-              <rect width={NODE_W} height={NODE_H} rx="8" />
-              <text className="node-code" x="12" y="22">
-                {u.code}
-                {blocked && " ⚠阻断"}
-              </text>
-              <text className="node-meta" x="12" y="42">
-                {KIND_LABEL[u.kind]} · {u.depthTop === null ? "深度缺失" : `顶深 ${u.depthTop}m`} ·{" "}
-                {STATUS_LABEL[u.status]}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
+            {nodes.map((n) => {
+              const u = n.unit;
+              const blocked = isUnitBlocked(u);
+              const hi = u.code ? highlightCodes.has(u.code) : false;
+              return (
+                <g
+                  key={u.id}
+                  transform={`translate(${n.x}, ${n.y})`}
+                  className={`node-group node-${u.status} ${hi ? "node-hi" : ""} ${blocked ? "node-blocked" : ""}`}
+                >
+                  <rect width={NODE_W} height={NODE_H} rx="8" />
+                  <text className="node-code" x="12" y="22">
+                    {u.code || "未编号"}
+                    {blocked && " ⚠"}
+                  </text>
+                  <text className="node-meta" x="12" y="42">
+                    {KIND_LABEL[u.kind]} · {u.depthTop === null ? "深度缺失" : `${u.depthTop}m`} · {STATUS_LABEL[u.status]}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      )}
       {cyclic && (
         <p className="cyclic-warning">
           ⚠ 该探方关系存在环路（正常录入会被拦截，此为存量异常提示）
         </p>
       )}
-      <p className="graph-hint">箭头由上层指向下层（晚 → 早）；点击连线中点 × 可删除关系（封存端点除外）</p>
+      <p className="graph-hint">箭头由上层指向下层（晚 → 早）；悬停连线点击 × 删除关系（封存端点除外）</p>
     </div>
   );
 }

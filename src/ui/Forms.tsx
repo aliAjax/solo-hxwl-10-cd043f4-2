@@ -46,7 +46,7 @@ export function UnitForm({
     <section className="panel">
       <header className="panel-head">
         <h2>① 新增遗迹单位</h2>
-        <p>缺编号或深度的记录会被标为阻断；同探方编号 / 坐标不可重复</p>
+        <p>缺编号或缺深度也可登记，会明确标为阻断；同探方编号 / 坐标不可重复</p>
       </header>
       <div className="form-grid">
         <label>
@@ -177,7 +177,7 @@ export function RelationForm({
             <option value="">选择上层…</option>
             {units.map((u) => (
               <option key={u.id} value={u.id}>
-                {u.square} · {u.code}（{KIND_LABEL[u.kind]}）
+                {u.square} · {u.code || "未编号（阻断）"}（{KIND_LABEL[u.kind]}）
               </option>
             ))}
           </select>
@@ -193,7 +193,7 @@ export function RelationForm({
               .filter((u) => u.id !== upper)
               .map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.square} · {u.code}（{KIND_LABEL[u.kind]}）
+                  {u.square} · {u.code || "未编号（阻断）"}（{KIND_LABEL[u.kind]}）
                 </option>
               ))}
           </select>

@@ -61,7 +61,7 @@ export interface VersionSnapshot {
   id: string;
   unitId: string;
   /** 触发版本留存的动作 */
-  reason: "submit" | "seal" | "reject" | "rollback" | "create";
+  reason: "submit" | "seal" | "reject" | "unseal" | "rollback" | "create";
   label: string;
   at: number;
   data: FeatureUnit;

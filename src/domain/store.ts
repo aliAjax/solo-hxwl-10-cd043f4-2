@@ -127,16 +127,10 @@ export function createStore(
       return {
         ok: false,
         type: "MISSING_SQUARE",
-        message: "缺少探方编号，无法登记遗迹单位（阻断）",
+        message: "缺少探方编号，无法登记遗迹单位",
       };
     }
-    if (!input.code) {
-      return {
-        ok: false,
-        type: "MISSING_CODE",
-        message: "缺少遗迹编号，该记录将无法进入地层序列（阻断），请补全后再提交",
-      };
-    }
+    // 注意：缺编号不再拒绝建档 —— 允许登记为阻断记录，补齐编号后自动解除
     if (
       input.depthTop !== null &&
       (!Number.isFinite(input.depthTop) || input.depthTop < 0)
@@ -158,11 +152,14 @@ export function createStore(
         message: "底部深度非法：必须为不小于顶层深度的数字",
       };
     }
-    const dupCode = state.units.find(
-      (u) =>
-        u.id !== selfId &&
-        unitKey(u) === unitKey({ code: input.code, square: input.square })
-    );
+    // 空编号属于阻断记录，不参与编号查重（允许同一探方内存在多条未编号记录）
+    const dupCode = input.code
+      ? state.units.find(
+          (u) =>
+            u.id !== selfId &&
+            unitKey(u) === unitKey({ code: input.code, square: input.square })
+        )
+      : undefined;
     if (dupCode) {
       return {
         ok: false,
@@ -183,7 +180,7 @@ export function createStore(
         return {
           ok: false,
           type: "DUPLICATE_COORD",
-          message: `坐标重复：探方 ${input.square} 的坐标 (${input.x}, ${input.y}) 已被遗迹「${dupCoord.code}」占用`,
+          message: `坐标重复：探方 ${input.square} 的坐标 (${input.x}, ${input.y}) 已被遗迹「${dupCoord.code || "未编号"}」占用`,
         };
       }
     }
@@ -218,10 +215,16 @@ export function createStore(
       emit();
       // 信息不完整仍允许建档，但直接标记说明（阻断单位不进序列）
       if (isUnitBlocked(unit)) {
+        const missing = [
+          !unit.code.trim() ? "遗迹编号" : null,
+          unit.depthTop === null ? "顶层深度" : null,
+        ]
+          .filter(Boolean)
+          .join("、");
         logConflict({
           type: "BLOCKED_UNIT",
-          message: `遗迹「${unit.code}」深度缺失，已登记为阻断记录：补齐深度前不能建立关系或提交复核`,
-          upperCode: unit.code,
+          message: `遗迹「${unit.code || "未编号"}」缺少${missing}，已登记为阻断记录：补齐前不能建立关系或推进状态`,
+          upperCode: unit.code || undefined,
           square: unit.square,
         });
         emit();
@@ -368,11 +371,12 @@ export function createStore(
       const unit = state.units.find((u) => u.id === id);
       if (!unit) return fail("NOT_FOUND", "单位不存在");
       const from = unit.status;
+      const codeLabel0 = unit.code || "未编号";
       if (from === to)
         return fail(
           "BAD_TRANSITION",
-          `遗迹「${unit.code}」当前已是「${statusLabel(to)}」状态`,
-          { upperCode: unit.code, square: unit.square }
+          `遗迹「${codeLabel0}」当前已是「${statusLabel(to)}」状态`,
+          { upperCode: unit.code || undefined, square: unit.square }
         );
 
       const forward: Record<UnitStatus, UnitStatus | null> = {
@@ -382,27 +386,38 @@ export function createStore(
       };
       const isForward = forward[from] === to;
       const isReject = from === "review" && to === "draft";
+      // 封存后允许领队退回草稿（解封），必须保留封存前版本
+      const isUnseal = from === "sealed" && to === "draft";
+      const codeLabel = unit.code || "未编号";
 
-      if (!isForward && !isReject) {
+      if (!isForward && !isReject && !isUnseal) {
         return fail(
           "BAD_TRANSITION",
           `不允许从「${statusLabel(from)}」直接变为「${statusLabel(to)}」`,
-          { upperCode: unit.code, square: unit.square }
+          { upperCode: unit.code || undefined, square: unit.square }
         );
       }
-      // 只有领队可推进；退回（待复核→草稿）发掘队员也可发起
+      // 推进状态只有领队可执行
       if (isForward && role !== "leader") {
         return fail(
           "NOT_LEADER",
-          `只有领队可以推进状态（当前角色：${roleLabel(role)}），「${unit.code}」停留在「${statusLabel(from)}」`,
-          { upperCode: unit.code, square: unit.square }
+          `只有领队可以推进状态（当前角色：${roleLabel(role)}），「${codeLabel}」停留在「${statusLabel(from)}」`,
+          { upperCode: unit.code || undefined, square: unit.square }
+        );
+      }
+      // 封存记录退回草稿同样仅限领队
+      if (isUnseal && role !== "leader") {
+        return fail(
+          "NOT_LEADER",
+          `已封存记录只有领队可以退回草稿（当前角色：${roleLabel(role)}），「${codeLabel}」维持封存`,
+          { upperCode: unit.code || undefined, square: unit.square }
         );
       }
       if (to === "review" && isUnitBlocked(unit)) {
         return fail(
           "BLOCKED_UNIT",
-          `遗迹「${unit.code}」缺少编号或深度，属于阻断记录，不能提交复核`,
-          { upperCode: unit.code, square: unit.square }
+          `遗迹「${codeLabel}」缺少编号或深度，属于阻断记录，不能提交复核`,
+          { upperCode: unit.code || undefined, square: unit.square }
         );
       }
       if (to === "sealed") {
@@ -410,26 +425,34 @@ export function createStore(
         if (isUnitBlocked(unit)) {
           return fail(
             "BLOCKED_UNIT",
-            `遗迹「${unit.code}」信息不完整，不能封存`,
-            { upperCode: unit.code, square: unit.square }
+            `遗迹「${codeLabel}」信息不完整，不能封存`,
+            { upperCode: unit.code || undefined, square: unit.square }
           );
         }
       }
 
       const nextUnit: FeatureUnit = { ...unit, status: to, updatedAt: nowFn() };
-      const reason: VersionSnapshot["reason"] = isReject
-        ? "reject"
-        : to === "sealed"
-          ? "seal"
-          : "submit";
+      const reason: VersionSnapshot["reason"] = isUnseal
+        ? "unseal"
+        : isReject
+          ? "reject"
+          : to === "sealed"
+            ? "seal"
+            : "submit";
       const labelMap: Record<VersionSnapshot["reason"], string> = {
         submit: `提交复核（草稿 → 待复核）`,
         seal: `封存（待复核 → 已封存）`,
         reject: `退回草稿（待复核 → 草稿）`,
+        unseal: `封存退回（已封存 → 草稿），封存前版本已保留`,
         rollback: "版本回退",
         create: "建档",
       };
-      const sv = snapshot(nextUnit, reason, labelMap[reason]);
+      const sv = snapshot(
+        // 推进类动作留存“到达”的里程碑；退回类动作留存“被退回前”的版本
+        isReject || isUnseal ? unit : nextUnit,
+        reason,
+        labelMap[reason]
+      ); // 退回/封存退回留存的是变更前快照（复核中 / 已封存）
       state = {
         ...state,
         units: state.units.map((u) => (u.id === id ? nextUnit : u)),

@@ -196,12 +196,67 @@ describe("非法关系与字段拦截", () => {
 
 // ---------- 阻断记录 ----------
 describe("阻断记录：缺编号或缺深度", () => {
-  test("缺编号：建档本身被拦截", () => {
+  test("缺编号：允许登记，但明确标为阻断", () => {
     const { store } = makeHarness();
     const r = store.addUnit(baseUnit({ code: "  " }));
-    assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.type, "MISSING_CODE");
-    assert.equal(store.getState().units.length, 0);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const id = (r as { ok: true; unitId: string }).unitId;
+    const u = store.getState().units.find((x) => x.id === id)!;
+    assert.equal(u.code, "");
+    assert.equal(isUnitBlocked(u), true);
+    // 阻断登记写入冲突日志，说明缺什么
+    const cf = store.getState().conflicts.at(-1)!;
+    assert.equal(cf.type, "BLOCKED_UNIT");
+    assert.match(cf.message, /编号/);
+  });
+
+  test("缺编号阻断记录：不进正常层位、不能建关系、领队也不能推进", () => {
+    const { store } = makeHarness();
+    const id = addOk(store, baseUnit({ code: "" }));
+
+    const seqs = buildSequences(store.getState());
+    const level = seqs[0].levels.find((l) => l.unit.id === id)!;
+    assert.equal(level.blocked, true); // 单列并标记阻断
+
+    const other = addOk(store, baseUnit({ code: "H2", x: 9, y: 9, depthTop: 0.6 }));
+    const rel = store.addRelation(other, id);
+    assert.equal(rel.ok, false);
+    if (!rel.ok) assert.equal(rel.type, "BLOCKED_ENDPOINT");
+
+    // 即使是领队，阻断记录也不能提交复核
+    const submit = store.transition(id, "review", "leader");
+    assert.equal(submit.ok, false);
+    if (!submit.ok) assert.equal(submit.type, "BLOCKED_UNIT");
+  });
+
+  test("同探方可有多条未编号记录；补编号时撞号仍被拦截", () => {
+    const { store } = makeHarness();
+    const a = addOk(store, baseUnit({ code: "", x: 1, y: 1 }));
+    const b = addOk(store, baseUnit({ code: "", x: 2, y: 2 }));
+    assert.notEqual(a, b);
+    addOk(store, baseUnit({ code: "H9", x: 3, y: 3 }));
+    const dup = store.editUnit(a, { code: "H9" });
+    assert.equal(dup.ok, false);
+    if (!dup.ok) assert.equal(dup.type, "DUPLICATE_CODE");
+    // 换一个不重复的编号可以补齐
+    assert.equal(store.editUnit(a, { code: "H7" }).ok, true);
+  });
+
+  test("补齐编号后阻断解除：可建关系、可提交复核", () => {
+    const { store } = makeHarness();
+    const id = addOk(store, baseUnit({ code: "" }));
+    assert.equal(isUnitBlocked(store.getState().units[0]), true);
+    assert.equal(store.editUnit(id, { code: "H1" }).ok, true);
+    assert.equal(isUnitBlocked(store.getState().units[0]), false);
+
+    const other = addOk(store, baseUnit({ code: "H2", x: 9, y: 9, depthTop: 0.5 }));
+    assert.equal(store.addRelation(other, id).ok, true);
+    assert.equal(store.transition(id, "review", "leader").ok, true);
+    // 补号后进入正常序列（不再带阻断标记）
+    const level = buildSequences(store.getState())[0].levels.find(
+      (l) => l.unit.id === id
+    )!;
+    assert.equal(level.blocked, false);
   });
 
   test("缺深度：允许建档但标记阻断，不进序列、不能建关系、不能提交复核", () => {
@@ -290,6 +345,93 @@ describe("状态流转：草稿→待复核→已封存", () => {
     if (!r.ok) assert.equal(r.type, "BAD_TRANSITION");
   });
 
+  // ---- 已封存 → 领队退回草稿（新需求）----
+  function sealUnit(store: Store, id: string) {
+    assert.equal(store.transition(id, "review", "leader").ok, true);
+    assert.equal(store.transition(id, "sealed", "leader").ok, true);
+  }
+
+  test("封存后：非领队不能退回；领队退回成功并回到草稿", () => {
+    const { store } = makeHarness();
+    const id = addOk(store, baseUnit({ note: "封存内容" }));
+    sealUnit(store, id);
+
+    const worker = store.transition(id, "draft", "worker");
+    assert.equal(worker.ok, false);
+    if (!worker.ok) assert.equal(worker.type, "NOT_LEADER");
+    const curator = store.transition(id, "draft", "curator");
+    assert.equal(curator.ok, false);
+    if (!curator.ok) assert.equal(curator.type, "NOT_LEADER");
+    assert.equal(findByCode(store, "T0101", "H1").status, "sealed");
+
+    const unseal = store.transition(id, "draft", "leader");
+    assert.equal(unseal.ok, true, JSON.stringify(unseal));
+    assert.equal(findByCode(store, "T0101", "H1").status, "draft");
+  });
+
+  test("封存退回必须保留封存前版本，且退回后才可编辑", () => {
+    const { store } = makeHarness();
+    const id = addOk(store, baseUnit({ note: "封存时备注" }));
+    sealUnit(store, id);
+    const sealVersion = store
+      .getState()
+      .versions.find((v) => v.unitId === id && v.reason === "seal")!;
+    assert.ok(sealVersion, "必须存在封存版本");
+    assert.equal(sealVersion.data.status, "sealed");
+    assert.equal(sealVersion.data.note, "封存时备注");
+
+    // 退回前编辑仍被拦截
+    const editBefore = store.editUnit(id, { note: "退回前篡改" });
+    assert.equal(editBefore.ok, false);
+    if (!editBefore.ok) assert.equal(editBefore.type, "SEALED_UNIT");
+
+    assert.equal(store.transition(id, "draft", "leader").ok, true);
+    const unsealVersion = store
+      .getState()
+      .versions.find((v) => v.unitId === id && v.reason === "unseal")!;
+    assert.ok(unsealVersion, "退回动作本身也留存版本");
+    assert.equal(unsealVersion.data.status, "sealed"); // 留存的是退回前的封存快照
+
+    // 封存版本仍在，未被覆盖
+    const sealStillThere = store
+      .getState()
+      .versions.some((v) => v.id === sealVersion.id && v.data.note === "封存时备注");
+    assert.equal(sealStillThere, true);
+
+    // 退回后可以编辑
+    assert.equal(store.editUnit(id, { note: "退回后更正" }).ok, true);
+    assert.equal(findByCode(store, "T0101", "H1").note, "退回后更正");
+
+    // 退回后可重新走流程
+    sealUnit(store, id);
+    assert.equal(findByCode(store, "T0101", "H1").status, "sealed");
+  });
+
+  test("封存退回后关系编辑恢复：可给退回为草稿的单位删关系", () => {
+    const { store } = makeHarness();
+    const a = addOk(store, baseUnit({ code: "H1", x: 1, y: 1, depthTop: 0.5 }));
+    const b = addOk(store, baseUnit({ code: "H2", x: 2, y: 2, depthTop: 1.0 }));
+    store.addRelation(a, b);
+    const relId = store.getState().relations[0].id;
+    sealUnit(store, a);
+    // 封存时删关系被拦截
+    assert.equal(store.removeRelation(relId).ok, false);
+    // 领队退回 a 后，关系恢复可删
+    assert.equal(store.transition(a, "draft", "leader").ok, true);
+    assert.equal(store.removeRelation(relId).ok, true);
+  });
+
+  test("未编号记录：封存入口本就不可达（阻断不能提交复核）", () => {
+    const { store } = makeHarness();
+    const id = addOk(store, baseUnit({ code: "" }));
+    assert.equal(store.transition(id, "review", "leader").ok, false);
+    // 因此也不存在封存版本
+    assert.equal(
+      store.getState().versions.filter((v) => v.unitId === id && v.reason === "seal").length,
+      0
+    );
+  });
+
   test("退回草稿必须保留版本：再编辑不覆盖封存/复核快照", () => {
     const { store, tick } = makeHarness();
     const id = addOk(store, baseUnit({ note: "初录" }));
@@ -309,12 +451,12 @@ describe("状态流转：草稿→待复核→已封存", () => {
       .versions.filter((v) => v.unitId === id)
       .map((v) => v.reason);
     assert.deepEqual(labels, ["create", "submit", "reject"]);
-    // 退回产生的快照内容是当时的待复核数据
+    // 退回产生的快照是变更前（待复核）内容
     const rejectSnap = store
       .getState()
       .versions.filter((v) => v.unitId === id)
       .find((v) => v.reason === "reject")!;
-    assert.equal(rejectSnap.data.status, "draft");
+    assert.equal(rejectSnap.data.status, "review");
     assert.equal(rejectSnap.data.note, "初录");
   });
 });
@@ -446,6 +588,43 @@ describe("持久化：刷新后不丢", () => {
     const r = restored.editUnit(a, { note: "刷新后篡改" });
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.type, "SEALED_UNIT");
+  });
+
+  test("封存退回与未编号阻断：刷新后状态和版本不丢", () => {
+    const { store } = makeHarness();
+    // 正常单位：封存 → 领队退回
+    const a = addOk(store, baseUnit({ code: "H1", x: 1, y: 1, note: "封存备注" }));
+    store.transition(a, "review", "leader");
+    store.transition(a, "sealed", "leader");
+    store.transition(a, "draft", "leader");
+    // 未编号阻断单位
+    const c = addOk(store, baseUnit({ code: "", x: 6, y: 6 }));
+
+    const storage = memStorage();
+    saveState(storage, store.getState());
+    const restored = createStore(loadState(storage)!, { now: () => 999 });
+
+    const restoredA = restored.getState().units.find((u) => u.id === a)!;
+    assert.equal(restoredA.status, "draft");
+    const reasons = restored
+      .getState()
+      .versions.filter((v) => v.unitId === a)
+      .map((v) => v.reason);
+    assert.deepEqual(reasons, ["create", "submit", "seal", "unseal"]);
+    // 封存前版本仍可查到封存内容
+    const sealSnap = restored
+      .getState()
+      .versions.find((v) => v.unitId === a && v.reason === "seal")!;
+    assert.equal(sealSnap.data.status, "sealed");
+    assert.equal(sealSnap.data.note, "封存备注");
+    // 退回后还原的数据可编辑
+    assert.equal(restored.editUnit(a, { note: "刷新后编辑" }).ok, true);
+
+    const restoredC = restored.getState().units.find((u) => u.id === c)!;
+    assert.equal(isUnitBlocked(restoredC), true);
+    // 补编号在刷新后仍然生效
+    assert.equal(restored.editUnit(c, { code: "H8" }).ok, true);
+    assert.equal(isUnitBlocked(restored.getState().units.find((u) => u.id === c)!), false);
   });
 
   test("损坏的存储内容被安全忽略", () => {

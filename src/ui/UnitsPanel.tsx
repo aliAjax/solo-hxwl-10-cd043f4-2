@@ -230,22 +230,22 @@ function UnitRow({
   const isLeader = role === "leader";
   return (
     <tr className={`${blocked ? "row-blocked" : ""} ${highlight ? "row-hi" : ""}`}>
-      <td>{u.square}</td>
-      <td className="cell-code">
-        {u.code}
+      <td data-label="探方">{u.square}</td>
+      <td className="cell-code" data-label="编号">
+        {u.code || <em className="no-code">未编号（阻断）</em>}
         {blocked && <span className="blocked-tag" title="缺编号或深度，阻断">⚠ 阻断</span>}
       </td>
-      <td>{KIND_LABEL[u.kind]}</td>
-      <td className={u.depthTop === null ? "dim-cell" : ""}>{fmtDepth(u.depthTop)}</td>
-      <td>{fmtDepth(u.depthBottom)}</td>
-      <td>{u.x === null || u.y === null ? "—" : `${u.x}, ${u.y}`}</td>
-      <td className="cell-soil">{u.soil || "—"}</td>
-      <td>
+      <td data-label="类型">{KIND_LABEL[u.kind]}</td>
+      <td data-label="顶深" className={u.depthTop === null ? "dim-cell" : ""}>{fmtDepth(u.depthTop)}</td>
+      <td data-label="底深">{fmtDepth(u.depthBottom)}</td>
+      <td data-label="坐标">{u.x === null || u.y === null ? "—" : `${u.x}, ${u.y}`}</td>
+      <td data-label="土色" className="cell-soil">{u.soil || "—"}</td>
+      <td data-label="状态">
         <span className={`status-badge ${statusClass(u.status)}`}>
           {STATUS_LABEL[u.status]}
         </span>
       </td>
-      <td className="col-ops">
+      <td className="col-ops" data-label="操作">
         <div className="row-ops">
           {u.status === "draft" && (
             <>
@@ -285,6 +285,20 @@ function UnitRow({
               </button>
             </>
           )}
+          {u.status === "sealed" &&
+            (isLeader ? (
+              <button
+                className="btn-mini"
+                onClick={() => run(() => store.transition(u.id, "draft", role))}
+                title="领队将封存记录退回草稿（封存前版本自动保留，退回后可编辑）"
+              >
+                退回草稿
+              </button>
+            ) : (
+              <button className="btn-mini" disabled title="只有领队可将封存记录退回草稿">
+                退回草稿
+              </button>
+            ))}
           {u.status === "sealed" && <span className="sealed-note">封存锁定</span>}
           <button className="btn-mini btn-mini-ghost" onClick={onHistory} title="查看版本">
             版本
@@ -419,7 +433,8 @@ function HistoryModal({
   return (
     <ModalShell title={`版本历史 ${unit.square} · ${unit.code}`} onClose={onClose}>
       <p className="modal-note">
-        建档、提交复核、退回草稿、封存与回退均留存版本；回退会把所选内容恢复为新草稿，且不删除任何旧版本。
+        建档、提交复核、退回草稿、封存、封存退回与版本回退均留存版本；回退会把所选内容恢复为新草稿，且不删除任何旧版本。
+        {sealed && " 该单位已封存，领队需先在台账中执行「退回草稿」，才能编辑或回退。"}
       </p>
       <ul className="version-list">
         {versions.map((v) => (
